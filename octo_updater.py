@@ -210,32 +210,52 @@ _CONFIG_LOCK = threading.RLock()
 
 
 def load_config() -> dict:
-    try:
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
+    """Load configuration, recovering the last known-good backup if needed."""
+    for path in (CONFIG_FILE, CONFIG_FILE + ".bak"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("configuration root must be an object")
+            if path != CONFIG_FILE:
+                log("Recovered settings from the last known-good backup.", "err")
+            return data
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            log(f"Could not read settings at {path}: {e}", "err")
+    return {}
 
 
-def _atomic_write(path: str, text: str):
-    """Write via a temp file + atomic rename so a crash mid-write can never
-    leave a truncated/corrupt file at `path`."""
+def _atomic_write_bytes(path: str, data: bytes):
+    """Durably replace `path` using a same-directory temporary file.
+
+    The existing target is retained until the new content has been flushed and
+    the rename succeeds, preventing partial executables/configuration files
+    after a crash, power loss, or antivirus interruption.
+    """
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
+    with open(tmp, "wb") as f:
+        f.write(data)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
+def _atomic_write(path: str, text: str):
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
 def save_config(data: dict):
     with _CONFIG_LOCK:
         try:
-            _atomic_write(CONFIG_FILE, json.dumps(data, indent=2))
-        except Exception:
-            pass
+            payload = json.dumps(data, indent=2)
+            # Keep a recoverable copy of the prior valid configuration.
+            if os.path.exists(CONFIG_FILE):
+                shutil.copyfile(CONFIG_FILE, CONFIG_FILE + ".bak")
+            _atomic_write(CONFIG_FILE, payload)
+        except Exception as e:
+            log(f"Could not save settings: {e}", "err")
 
 
 def update_config(mutator):
@@ -334,6 +354,7 @@ ARIA2_ZIP_URL    = ("https://github.com/aria2/aria2/releases/download/"
                     "release-1.37.0/aria2-1.37.0-win-32bit-build1.zip")
 ARIA2_ZIP_SHA256 = "35f6514cc5dd7e98a87b3c4c2d25a0754b9b063dbe59bc0f22d483464f61e5b6"
 ARIA2C_PATH      = os.path.join(APP_DATA_DIR, "aria2c.exe")
+ARIA2C_HASH_PATH = ARIA2C_PATH + ".sha256"
 
 # The torrent's top-level folder name: aria2 writes files under <dir>/<name>/…,
 # so a junction <staging>/client → the real client dir lands them in place.
@@ -457,6 +478,19 @@ def fetch_torrent(url: str = CLIENT_TORRENT_URL) -> tuple:
               int(f.get(b"length", 0)))
              for f in info.get(b"files", [])]
     return raw, files
+
+
+def persist_torrent(raw: bytes) -> str:
+    """Persist the exact manifest used to build an update plan.
+
+    aria2 must consume these bytes, rather than re-fetching a mutable URL after
+    selection was calculated. This prevents file-index drift when the server
+    publishes a new torrent during an update.
+    """
+    ensure_dir(TORRENT_STAGING_DIR)
+    path = os.path.join(TORRENT_STAGING_DIR, "client.torrent")
+    _atomic_write_bytes(path, raw)
+    return path
 
 
 def torrent_version(raw: bytes) -> str:
@@ -869,15 +903,15 @@ def stop_aria2c():
             pass
 
 
-def run_aria2c(client_dir, select_files=None, check_integrity=False,
-               on_progress=None, should_cancel=None, log_fn=log):
-    """Sync the client torrent into client_dir with aria2c (leech-only). Blocks
-    until aria2c exits; raises on a non-zero exit or cancellation. Calls
-    on_progress(dict) per update and should_cancel()->bool to abort.
+def run_aria2c(client_dir, torrent_path: str, select_files=None,
+               check_integrity=False, on_progress=None, should_cancel=None,
+               log_fn=log):
+    """Sync the client torrent into client_dir with aria2c (leech-only).
 
-    aria2 is handed the .torrent URL (not a local copy), so it always fetches
-    the server's current torrent at download time — no chance of running a stale
-    local .torrent if the user starts the update long after the verify."""
+    `torrent_path` is the locally persisted torrent that was parsed to build
+    the file selection. Keeping the plan and aria2 input identical prevents a
+    server-side torrent rollover from applying indices to the wrong files.
+    """
     global _active_aria2
     exe     = ensure_aria2c(log_fn)
     staging = _ensure_torrent_junction(client_dir)
@@ -912,7 +946,7 @@ def run_aria2c(client_dir, select_files=None, check_integrity=False,
     ]
     if select_files:
         args.append("--select-file=" + ",".join(str(i) for i in select_files))
-    args.append(CLIENT_TORRENT_URL)
+    args.append(torrent_path)
 
     proc = subprocess.Popen(args, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
@@ -1106,6 +1140,7 @@ class UpdateWorker:
             self.progress(0.0, "Preparing…")
             raw, files = fetch_torrent()
             version = torrent_version(raw)
+            torrent_path = persist_torrent(raw)
 
             # aria2's saved control state pins a torrent revision and its
             # completed pieces. When the torrent was re-rolled (new identity) or
@@ -1192,7 +1227,7 @@ class UpdateWorker:
                 shielded = shield_protected_files(self.out_dir, files,
                                                   ignore_speech)
                 try:
-                    run_aria2c(self.out_dir, select_files=need,
+                    run_aria2c(self.out_dir, torrent_path, select_files=need,
                                check_integrity=self.check_integrity,
                                on_progress=_prog,
                                should_cancel=lambda: self._cancel,

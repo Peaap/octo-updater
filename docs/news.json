@@ -1,0 +1,36 @@
+{
+  "featured": {
+    "id": "announcement-beta-test-info",
+    "title": "Beta Test Info",
+    "date": "2026-04-28T21:16:00Z",
+    "author": "Kestrel",
+    "body": "Read the latest OctoWoW announcement in the official forum.",
+    "url": "https://octowow.st/forum/viewtopic.php?t=3"
+  },
+  "patchNotes": [
+    {
+      "id": "patch-hardware-upgrade-update",
+      "title": "Hardware Upgrade Update",
+      "date": "2026-09-08T20:49:00Z",
+      "author": "Archer",
+      "body": "See the official forum topic for the complete update.",
+      "url": "https://octowow.st/forum/viewtopic.php?t=2247"
+    },
+    {
+      "id": "patch-ddos-round-12",
+      "title": "DDoS Round 12",
+      "date": "2026-09-08T09:36:00Z",
+      "author": "Kestrel",
+      "body": "See the official forum topic for the complete update.",
+      "url": "https://octowow.st/forum/viewtopic.php?t=2231"
+    },
+    {
+      "id": "patch-ddos-round-11",
+      "title": "DDoS Round 11",
+      "date": "2026-09-07T12:15:00Z",
+      "author": "Kestrel",
+      "body": "See the official forum topic for the complete update.",
+      "url": "https://octowow.st/forum/viewtopic.php?t=2208"
+    }
+  ]
+}
